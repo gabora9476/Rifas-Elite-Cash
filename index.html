@@ -73,8 +73,16 @@ input,select,textarea{font-family:var(--fb);color:var(--text)}
 /* HERO */
 .hero{padding:20px 16px 8px;text-align:center}
 .hero-badge{display:inline-flex;align-items:center;gap:7px;background:rgba(212,175,55,.09);border:1px solid var(--border2);border-radius:20px;padding:5px 14px;margin-bottom:12px;font-size:10px;color:var(--gold);letter-spacing:2.5px;text-transform:uppercase;font-family:var(--fh);font-weight:700}
-.hero-title{font-family:var(--fh);font-size:26px;font-weight:900;line-height:1.2;margin-bottom:7px;background:linear-gradient(135deg,var(--gold-l) 0%,var(--gold) 45%,var(--green) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:title-glow 3.5s ease infinite}
-@keyframes title-glow{0%,100%{filter:brightness(1)}50%{filter:brightness(1.18)}}
+.hero-title{font-family:var(--fh);font-size:26px;font-weight:900;line-height:1.2;margin-bottom:7px}
+.shiny-text{
+  display:inline-block;
+  background-image:linear-gradient(120deg,var(--gold) 0%,var(--gold) 30%,#ffffff 47%,var(--gold-l) 50%,#ffffff 53%,var(--gold) 70%,var(--gold) 100%);
+  background-size:250% auto;
+  -webkit-background-clip:text;
+  background-clip:text;
+  -webkit-text-fill-color:transparent;
+  background-position:150% center;
+}
 .hero-sub{font-size:13px;color:var(--text-d);font-weight:600}
 .divider{display:flex;align-items:center;gap:10px;padding:12px 14px 6px}
 .divider::before,.divider::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--border),transparent)}
@@ -390,7 +398,7 @@ function router(){
   const h=(window.location.hash||'#').replace('#','').replace(/^\//,'')||'/';
   if(h.startsWith('raffle/')) renderRaffle(h.replace('raffle/',''));
   else if(h==='admin'){isAdm?renderAdmin():renderLogin();}
-  else{sel=[];curRfId=null;renderHome();}
+  else{sel=[];curRfId=null;renderHome();initShiny();}
 }
 function go(p){window.location.hash=p;}
 
@@ -414,7 +422,7 @@ function renderHome(){
   </header>
   <div class="hero">
     <div class="hero-badge">${ic('trophy')} Sorteos &amp; Rifas Oficiales</div>
-    <h1 class="hero-title">¡Tu suerte comienza aquí!</h1>
+    <h1 class="hero-title"><span id="shiny-hero" class="shiny-text">¡Tu suerte comienza aquí!</span></h1>
     <p class="hero-sub">Selecciona tu número y gana grandes premios</p>
   </div>
   <div class="divider"><span class="div-txt">${ic('dice')} Sorteos Disponibles</span></div>
@@ -960,6 +968,68 @@ function toast(msg,type='info'){
   const imap={ok:'circle-check',err:'circle-xmark',info:'circle-info'};
   el.innerHTML=`${ic(imap[type]||'circle-info')} ${msg}`;
   document.body.appendChild(el);setTimeout(()=>el.remove(),3300);
+}
+
+// ── SHINY TEXT ENGINE (ported from react-bits ShinyText) ──
+function ShinyTextEngine(el, opts){
+  const cfg = Object.assign({
+    speed:2, delay:0, color:'#D4AF37', shineColor:'#ffffff',
+    spread:120, yoyo:false, pauseOnHover:false, direction:'left', disabled:false
+  }, opts);
+  const dirMul = cfg.direction==='left' ? 1 : -1;
+  let elapsed=0, lastTime=null, progress=0, paused=false;
+  const animDur  = cfg.speed * 1000;
+  const delayDur = cfg.delay * 1000;
+  el.style.backgroundImage=`linear-gradient(${cfg.spread}deg,${cfg.color} 0%,${cfg.color} 35%,${cfg.shineColor} 50%,${cfg.color} 65%,${cfg.color} 100%)`;
+  el.style.backgroundSize='200% auto';
+  el.style.webkitBackgroundClip='text';
+  el.style.backgroundClip='text';
+  el.style.webkitTextFillColor='transparent';
+  el.style.display='inline-block';
+  function setPos(p){
+    // p 0→100: shine sweeps left
+    const pos = dirMul===1 ? (150 - p*2) : (-50 + p*2);
+    el.style.backgroundPosition=`${pos}% center`;
+  }
+  if(cfg.pauseOnHover){
+    el.addEventListener('mouseenter',()=>paused=true);
+    el.addEventListener('mouseleave',()=>paused=false);
+  }
+  function frame(time){
+    if(!cfg.disabled && !paused){
+      if(lastTime===null){ lastTime=time; requestAnimationFrame(frame); return; }
+      elapsed += time - lastTime;
+      lastTime = time;
+      if(cfg.yoyo){
+        const cycDur  = animDur + delayDur;
+        const fullCyc = cycDur * 2;
+        const cyc     = elapsed % fullCyc;
+        if(cyc < animDur)                          { progress = (cyc/animDur)*100; }
+        else if(cyc < cycDur)                      { progress = 100; }
+        else if(cyc < cycDur + animDur)            { progress = 100 - ((cyc-cycDur)/animDur)*100; }
+        else                                       { progress = 0; }
+      } else {
+        const cycDur = animDur + delayDur;
+        const cyc    = elapsed % cycDur;
+        progress = cyc < animDur ? (cyc/animDur)*100 : (dirMul===1 ? 100 : 0);
+      }
+      setPos(progress);
+    } else {
+      lastTime = null;
+    }
+    requestAnimationFrame(frame);
+  }
+  setPos(0);
+  requestAnimationFrame(frame);
+}
+
+// Init ShinyText on hero — called after home render
+function initShiny(){
+  const el = document.getElementById('shiny-hero');
+  if(el && !el._shiny){
+    el._shiny = true;
+    ShinyTextEngine(el,{speed:2.2, delay:0.4, color:'#C9980A', shineColor:'#FFD700', spread:110, yoyo:false, direction:'left'});
+  }
 }
 
 async function init(){
