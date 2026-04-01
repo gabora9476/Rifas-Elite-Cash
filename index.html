@@ -214,8 +214,37 @@ select.fi option{background:#101018;color:#f0ece0}
 .total-lbl{font-size:12px;color:var(--text-d);font-weight:600}
 .total-amt{font-family:var(--fn);font-size:18px;color:var(--gold-l)}
 
-/* TOAST */
-.toast{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);z-index:600;background:rgba(11,11,18,.97);border:1px solid var(--border);border-radius:var(--r2);padding:11px 18px;font-size:13px;color:var(--text);font-weight:600;box-shadow:var(--shadow);white-space:nowrap;display:flex;align-items:center;gap:8px;animation:tIn .25s ease,tOut .3s ease 2.7s forwards}
+/* RANDOM PICK BUTTONS */
+.rand-row{display:flex;gap:6px;margin-bottom:9px;align-items:center}
+.rand-lbl{font-size:10px;color:var(--text-m);font-family:var(--fh);font-weight:700;letter-spacing:1px;white-space:nowrap}
+.rand-btn{
+  flex:1;padding:7px 4px;border-radius:8px;
+  background:linear-gradient(135deg,rgba(212,175,55,.13),rgba(212,175,55,.05));
+  border:1px solid var(--border2);color:var(--gold);
+  font-family:var(--fh);font-size:11px;font-weight:800;
+  display:flex;align-items:center;justify-content:center;gap:4px;
+  transition:all .15s;cursor:pointer;
+}
+.rand-btn:active{transform:scale(.93);background:rgba(212,175,55,.25)}
+.rand-btn i{font-size:10px}
+
+/* BACKUP SECTION */
+.bk-row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.bk-btn{
+  flex:1;min-width:120px;padding:11px;border-radius:var(--r2);
+  font-family:var(--fh);font-size:12px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;
+  transition:all .15s;
+}
+.bk-btn:active{transform:scale(.96)}
+.bk-dl{background:rgba(100,181,246,.12);border:1px solid rgba(100,181,246,.4);color:#64B5F6}
+.bk-up{background:rgba(0,200,83,.1);border:1px solid var(--green);color:var(--green)}
+.bk-info{font-size:10px;color:var(--text-m);font-weight:500;line-height:1.6;margin-top:4px}
+.bk-info strong{color:var(--gold)}
+
+/* TOAST override for longer msgs */
+.toast{white-space:normal;max-width:85vw;text-align:left}
+
 .toast.ok{border-color:var(--green);color:var(--green)}
 .toast.err{border-color:var(--danger);color:var(--danger)}
 .toast.info{border-color:var(--gold);color:var(--gold)}
@@ -345,15 +374,70 @@ const icb=(n,c='')=>`<i class="fa-brands fa-${n}${c?' '+c:''}"></i>`;
 let db=null,sel=[],curRfId=null,isAdm=false,admTab='raffles',editId=null,uploadUrl='';
 
 async function loadDB(){
+  // Try localStorage cache first so UI loads fast
   try{
-    const r=await fetch(`https://api.jsonbin.io/v3/b/${C.BIN_ID}/latest`,{headers:{'X-Master-Key':C.BIN_KEY,'X-Bin-Meta':'false'}});
-    if(!r.ok) throw 0;
-    const d=await r.json(); db=d.record||d; sanitizeDB(); return true;
-  }catch(e){ db=freshDB(); try{await saveDB();}catch(_){} return false; }
+    const cache=localStorage.getItem('ec_db_cache');
+    if(cache){ db=JSON.parse(cache); sanitizeDB(); }
+  }catch(_){}
+  // Fetch remote
+  try{
+    const r=await fetch(`https://api.jsonbin.io/v3/b/${C.BIN_ID}/latest`,{
+      headers:{'X-Master-Key':C.BIN_KEY,'X-Bin-Meta':'false'}
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d=await r.json();
+    const raw=d.record||d;
+    // ── INTEGRITY GUARD: only accept data that has our Elite Cash marker ──
+    // This prevents an accidental empty overwrite from being loaded
+    if(raw && raw._ec===true){
+      db=raw; sanitizeDB();
+      try{localStorage.setItem('ec_db_cache',JSON.stringify(db));}catch(_){}
+      return true;
+    } else if(raw && Array.isArray(raw.raffles)){
+      // Valid data but missing marker (first run after upgrade) — accept & re-stamp
+      db=raw; sanitizeDB();
+      db._ec=true;
+      try{localStorage.setItem('ec_db_cache',JSON.stringify(db));}catch(_){}
+      // Stamp it remotely without blocking
+      saveDB().catch(()=>{});
+      return true;
+    } else {
+      // Remote data is empty/corrupt — use local cache or freshDB, NEVER overwrite remote
+      if(!db) db=freshDB();
+      return false;
+    }
+  }catch(e){
+    // Network error — use cache already set above, or freshDB as last resort
+    // CRITICAL: do NOT call saveDB() here — that would wipe remote data
+    if(!db) db=freshDB();
+    return false;
+  }
 }
 
 async function saveDB(){
-  const r=await fetch(`https://api.jsonbin.io/v3/b/${C.BIN_ID}`,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':C.BIN_KEY},body:JSON.stringify(db)});
+  // ── SAFETY GUARD: never save an empty or smaller-than-cached dataset ──
+  try{
+    const cache=localStorage.getItem('ec_db_cache');
+    if(cache){
+      const prev=JSON.parse(cache);
+      const prevCount=(prev.raffles||[]).length;
+      const curCount=(db.raffles||[]).length;
+      // Allow deletions initiated by admin (only block accidental wipes: going from >0 to 0)
+      if(prevCount>0 && curCount===0 && !db._allowEmpty){
+        console.warn('saveDB blocked: would wipe all raffles');
+        return false;
+      }
+    }
+  }catch(_){}
+  // Stamp integrity marker and timestamp
+  db._ec=true;
+  db._saved=new Date().toISOString();
+  const r=await fetch(`https://api.jsonbin.io/v3/b/${C.BIN_ID}`,{
+    method:'PUT',
+    headers:{'Content-Type':'application/json','X-Master-Key':C.BIN_KEY},
+    body:JSON.stringify(db)
+  });
+  if(r.ok) try{localStorage.setItem('ec_db_cache',JSON.stringify(db));}catch(_){}
   return r.ok;
 }
 
@@ -510,6 +594,12 @@ function renderRaffle(id){
         </div>
       </div>
       ${r.totalNumbers>50?`<input class="board-search" placeholder="Buscar número..." oninput="filterNums(this.value)">`:''}
+      <div class="rand-row">
+        <span class="rand-lbl">${ic('shuffle')} Aleatorio:</span>
+        <button class="rand-btn" onclick="pickRandom(5)">${ic('plus')} 5</button>
+        <button class="rand-btn" onclick="pickRandom(10)">${ic('plus')} 10</button>
+        <button class="rand-btn" onclick="pickRandom(20)">${ic('plus')} 20</button>
+      </div>
       <div class="num-grid" id="num-grid" style="${gridStyle(r.totalNumbers)}">${buildGrid(r)}</div>
     </div>
     <div class="fab-wrap">
@@ -540,6 +630,33 @@ function buildGrid(r){
 }
 
 function filterNums(q){document.querySelectorAll('.nb').forEach(b=>{b.style.display=(!q||b.textContent.trim().includes(q))?'':'none';});}
+
+// ── RANDOM PICK ──
+function pickRandom(n){
+  const r=db.raffles.find(x=>x.id===curRfId);if(!r) return;
+  // Gather all truly available keys not already selected
+  const start=parseInt(r.startFrom)||0,total=parseInt(r.totalNumbers)||100;
+  const pad=Math.max(String(start+total-1).length,2);
+  const pool=[];
+  for(let i=start;i<start+total;i++){
+    const k=String(i).padStart(pad,'0');
+    const nd=r.numbers?.[k];
+    const st=nd?.status||'available';
+    if(st==='available' && !sel.includes(k)) pool.push(k);
+  }
+  if(!pool.length){toast('No hay números disponibles','err');return;}
+  // Shuffle pool (Fisher-Yates) and pick up to n
+  for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+  const toAdd=pool.slice(0,Math.min(n,pool.length));
+  toAdd.forEach(k=>{
+    sel.push(k);
+    const btn=document.getElementById(`nb-${k}`);
+    if(btn){btn.className='nb selected';btn.style.animation='none';requestAnimationFrame(()=>{btn.style.animation='';});}
+  });
+  if(navigator.vibrate) navigator.vibrate([30,20,30]);
+  toast(`${toAdd.length} números seleccionados aleatoriamente`,'ok');
+  updateSelPrev();
+}
 
 function toggleNum(k){
   const r=db.raffles.find(x=>x.id===curRfId);if(!r) return;
@@ -818,7 +935,22 @@ function tabSocial(){
 }
 
 function tabSettings(){
+  const lastSaved=db._saved?`Último guardado en la nube: <strong>${new Date(db._saved).toLocaleString('es-VE')}</strong>`:'Sin marca de tiempo';
+  const raffleCount=(db.raffles||[]).length;
+  const numsSold=db.raffles?.reduce((a,r)=>a+Object.values(r.numbers||{}).filter(n=>n.status==='sold').length,0)||0;
   return`<div>
+    <div class="fsec"><div class="fsec-t">${ic('database')} Respaldo de Datos</div>
+      <div class="bk-row">
+        <button class="bk-btn bk-dl" onclick="downloadBackup()">${ic('download')} Descargar Backup</button>
+        <button class="bk-btn bk-up" onclick="document.getElementById('bk-file').click()">${ic('upload')} Restaurar Backup</button>
+      </div>
+      <input type="file" id="bk-file" accept=".json" style="display:none" onchange="restoreBackup(this)">
+      <div class="bk-info">
+        ${ic('circle-info')} ${lastSaved}<br>
+        ${ic('ticket')} <strong>${raffleCount}</strong> sorteos guardados &nbsp;·&nbsp; ${ic('ban')} <strong>${numsSold}</strong> vendidos<br>
+        <span style="color:var(--pending)">${ic('triangle-exclamation')} Guarda un backup antes de hacer cambios importantes.</span>
+      </div>
+    </div>
     <div class="fsec"><div class="fsec-t">${ic('mobile-screen')} Configuración General</div>
       <div class="fg"><label class="fl">${icb('whatsapp')} WhatsApp Admin</label><input type="text" class="fi" id="s-wa" value="${esc(db.settings.whatsapp||'04120379473')}" placeholder="04120379473"></div>
       <div class="fg"><label class="fl">${ic('credit-card')} Datos de Pago</label><textarea class="fi" id="s-pay" rows="3">${esc(db.settings.paymentInfo||C.DEF_PAY)}</textarea></div>
@@ -894,7 +1026,10 @@ function confirmDel(id){
 async function delRfl(id){
   document.getElementById('conf-ov')?.remove();
   db.raffles=db.raffles.filter(r=>r.id!==id);
-  const ok=await saveDB();if(ok){toast('Sorteo eliminado','ok');renderAdmin();}
+  db._allowEmpty=true; // explicit admin delete — bypass guard
+  const ok=await saveDB();
+  delete db._allowEmpty;
+  if(ok){toast('Sorteo eliminado','ok');renderAdmin();}
 }
 
 async function verifyPay(rfId,numKey,approved){
@@ -915,6 +1050,72 @@ async function addSoc(){
 async function rmSoc(i){
   db.socialLinks.splice(i,1);const ok=await saveDB();
   if(ok){toast('Eliminada','ok');swTab('social');}
+}
+
+// ── BACKUP / RESTORE ──
+function downloadBackup(){
+  const snap={...db, _backupDate:new Date().toISOString(), _ec:true};
+  const blob=new Blob([JSON.stringify(snap,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const dt=new Date().toISOString().slice(0,16).replace('T','_').replace(':','-');
+  a.href=url; a.download=`elitecash_backup_${dt}.json`;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url);a.remove();},1000);
+  toast(`Backup descargado (${(db.raffles||[]).length} sorteos)`,'ok');
+}
+
+function restoreBackup(inp){
+  const f=inp.files[0]; if(!f) return;
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    try{
+      const parsed=JSON.parse(e.target.result);
+      // Validate
+      if(!parsed._ec || !Array.isArray(parsed.raffles)){
+        toast('Archivo inválido — no es un backup de Elite Cash','err'); return;
+      }
+      // Confirm
+      const ov=document.createElement('div');ov.className='conf-overlay';ov.id='restore-ov';
+      ov.innerHTML=`<div class="conf-box pop">
+        <div class="conf-ic" style="color:var(--gold)">${ic('rotate-left')}</div>
+        <div class="conf-t" style="color:var(--gold)">Restaurar Backup</div>
+        <div class="conf-s">Se restaurarán <strong style="color:var(--text)">${parsed.raffles.length} sorteos</strong> del archivo.<br>
+          Backup del: <strong style="color:var(--gold)">${parsed._backupDate?new Date(parsed._backupDate).toLocaleString('es-VE'):'desconocido'}</strong><br>
+          <span style="color:var(--danger)">Los datos actuales serán reemplazados.</span>
+        </div>
+        <div class="conf-acts">
+          <button class="conf-cancel" onclick="document.getElementById('restore-ov').remove()">${ic('xmark')} Cancelar</button>
+          <button class="conf-ok" style="border-color:var(--gold);color:var(--gold);background:rgba(212,175,55,.15)" onclick="doRestore()">
+            ${ic('rotate-left')} Restaurar
+          </button>
+        </div>
+      </div>`;
+      document.body.appendChild(ov);
+      ov.addEventListener('click',ev=>{if(ev.target===ov) ov.remove();});
+      // Store parsed data for doRestore to use
+      window._pendingRestore=parsed;
+    }catch(err){
+      toast('Error leyendo el archivo','err');
+    }
+  };
+  reader.readAsText(f);
+  inp.value=''; // reset input
+}
+
+async function doRestore(){
+  document.getElementById('restore-ov')?.remove();
+  if(!window._pendingRestore){toast('Sin datos para restaurar','err');return;}
+  db=window._pendingRestore;
+  db._ec=true; db._saved=new Date().toISOString();
+  sanitizeDB();
+  // Allow saving even if raffles were 0 before
+  db._allowEmpty=true;
+  const ok=await saveDB();
+  delete db._allowEmpty;
+  window._pendingRestore=null;
+  if(ok){toast(`Backup restaurado: ${(db.raffles||[]).length} sorteos`,'ok');renderAdmin();}
+  else   toast('Error guardando restauración','err');
 }
 
 async function saveSettings(){
